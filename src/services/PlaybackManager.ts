@@ -110,6 +110,12 @@ export const playAudio = async (
         webAudio.ontimeupdate = () =>
           onProgress(webAudio.currentTime, webAudio.duration || track.duration || 0);
       }
+      webAudio.onended = () => {
+        try {
+          const { useMusicStore } = require('../store/useMusicStore');
+          useMusicStore.getState().skipToNext();
+        } catch {}
+      };
       await webAudio.play().catch((e: any) => console.warn('Web audio play error:', e));
     }
     return;
@@ -326,5 +332,24 @@ export const nativePlayNext = async (track: Track, afterIndex: number) => {
     }
   } catch (e) {
     console.warn('[PlaybackManager] nativePlayNext error:', e);
+  }
+};
+
+export const syncUpcomingTracks = async (upcomingTracks: Track[]) => {
+  if (Platform.OS === 'web') return;
+  const TrackPlayer = getTrackPlayer();
+  if (!TrackPlayer) return;
+  try {
+    await setupPlayer();
+    if (typeof TrackPlayer.removeUpcomingTracks === 'function') {
+      await TrackPlayer.removeUpcomingTracks();
+    }
+    if (upcomingTracks.length > 0 && typeof TrackPlayer.add === 'function') {
+      const payload = upcomingTracks.map((t, idx) => toNativeTrack(t, idx));
+      await TrackPlayer.add(payload);
+    }
+    currentLoadedQueueHash = '';
+  } catch (e) {
+    console.warn('[PlaybackManager] syncUpcomingTracks error:', e);
   }
 };
