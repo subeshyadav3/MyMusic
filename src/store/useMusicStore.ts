@@ -3,7 +3,7 @@ import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Track, Album, Artist, Genre, Folder, Playlist, RepeatModeType } from '../types/music';
 import { DEMO_TRACKS } from '../constants/demoTracks';
-import { setupPlayer, playAudio, pauseAudio, resumeAudio, seekAudio, setRepeatMode, setPlaybackRate, nativeAppendTrack, nativeRemoveAt, nativePlayNext } from '../services/PlaybackManager';
+import { setupPlayer, playAudio, pauseAudio, resumeAudio, seekAudio, setRepeatMode, setPlaybackRate, nativeAppendTrack, nativeRemoveAt, nativePlayNext, syncUpcomingTracks } from '../services/PlaybackManager';
 import { scanDeviceAudioFiles } from '../services/MediaScanner';
 import { updateGlobalTheme } from '../constants/colors';
 
@@ -90,6 +90,15 @@ const DEFAULT_SETTINGS: AppSettings = {
   eqGains: [0, 0, 0, 0, 0],
   crossfadeSec: 0,
 };
+
+function shuffleArray<T>(array: T[]): T[] {
+  const arr = [...array];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
 
 function buildLibrary(tracks: Track[]) {
   // Albums
@@ -178,6 +187,7 @@ interface MusicStore {
   // Playback
   currentTrack: Track | null;
   currentQueue: Track[];
+  originalQueue: Track[];
   queueIndex: number;
   isPlaying: boolean;
   position: number;
@@ -208,7 +218,7 @@ interface MusicStore {
   skipToNext: () => Promise<void>;
   skipToPrevious: () => Promise<void>;
   seekTo: (sec: number) => Promise<void>;
-  toggleShuffle: () => void;
+  toggleShuffle: () => Promise<void>;
   cycleRepeat: () => Promise<void>;
   toggleFavorite: (trackId: string) => Promise<void>;
   isFavorite: (trackId: string) => boolean;
@@ -251,6 +261,7 @@ export const useMusicStore = create<MusicStore>((set, get) => ({
   scanProgress: 0,
   currentTrack: null,
   currentQueue: DEMO_TRACKS,
+  originalQueue: DEMO_TRACKS,
   queueIndex: 0,
   isPlaying: false,
   position: 0,
@@ -401,8 +412,19 @@ export const useMusicStore = create<MusicStore>((set, get) => ({
   },
 
   playTrack: async (track, queue) => {
-    const q = queue || get().allTracks;
-    const idx = Math.max(0, q.findIndex(t => t.id === track.id));
+    const baseQueue = queue || (get().originalQueue.length > 0 ? get().originalQueue : get().allTracks);
+    const { shuffleMode } = get();
+
+    let playQ = baseQueue;
+    let playIdx = Math.max(0, baseQueue.findIndex(t => t.id === track.id));
+
+    if (shuffleMode && baseQueue.length > 1) {
+      const rest = baseQueue.filter(t => t.id !== track.id);
+      const shuffledRest = shuffleArray(rest);
+      playQ = [track, ...shuffledRest];
+      playIdx = 0;
+    }
+
     const saved = get().settings.autoResume ? await AsyncStorage.getItem(STORAGE_KEYS.LAST_TRACK) : null;
     let startPosition = 0;
     if (saved) {
@@ -411,7 +433,15 @@ export const useMusicStore = create<MusicStore>((set, get) => ({
         if (parsed.trackId === track.id) startPosition = Math.max(0, parsed.position || 0);
       } catch {}
     }
-    set({ currentTrack: track, currentQueue: q, queueIndex: idx, isPlaying: true, position: startPosition, duration: track.duration || 0 });
+    set({
+      currentTrack: track,
+      originalQueue: baseQueue,
+      currentQueue: playQ,
+      queueIndex: playIdx,
+      isPlaying: true,
+      position: startPosition,
+      duration: track.duration || 0,
+    });
     if (get().settings.autoResume) persistPlayback(track.id, startPosition, true).catch(() => {});
     // Update history
     if (get().settings.trackHistory) {
@@ -421,7 +451,7 @@ export const useMusicStore = create<MusicStore>((set, get) => ({
       AsyncStorage.setItem(STORAGE_KEYS.HISTORY, JSON.stringify(history)).catch(() => {});
       AsyncStorage.setItem(STORAGE_KEYS.PLAY_COUNTS, JSON.stringify(playCounts)).catch(() => {});
     }
-     await playAudio(q, idx, (pos, dur) => get().updatePlaybackProgress(pos, dur), startPosition, get().settings.crossfadeSec);
+    await playAudio(playQ, playIdx, (pos, dur) => get().updatePlaybackProgress(pos, dur), startPosition, get().settings.crossfadeSec);
   },
 
   togglePlayPause: async () => {
@@ -435,19 +465,30 @@ export const useMusicStore = create<MusicStore>((set, get) => ({
   },
 
   skipToNext: async () => {
-    const { currentQueue, queueIndex, shuffleMode, repeatMode, currentTrack } = get();
+    const { currentQueue, queueIndex, repeatMode, currentTrack, shuffleMode, originalQueue } = get();
     if (!currentQueue.length) return;
     if (repeatMode === 'track' && currentTrack) {
       await seekAudio(0); set({ position: 0 });
       return;
     }
-    let next = shuffleMode ? Math.floor(Math.random() * currentQueue.length) : (queueIndex + 1);
-    if (shuffleMode && currentQueue.length > 1) {
-      let guard = 0;
-      while (next === queueIndex && guard++ < 5) next = Math.floor(Math.random() * currentQueue.length);
+    let next = queueIndex + 1;
+    if (next >= currentQueue.length) {
+      if (repeatMode === 'queue') {
+        if (shuffleMode && originalQueue.length > 1) {
+          const reshuffled = shuffleArray(originalQueue);
+          set({ currentQueue: reshuffled, queueIndex: 0 });
+          await get().playTrack(reshuffled[0], originalQueue);
+          return;
+        }
+        next = 0;
+      } else {
+        return;
+      }
     }
-    if (next >= currentQueue.length) { if (repeatMode === 'queue') next = 0; else return; }
-    await get().playTrack(currentQueue[next], currentQueue);
+    const nextTrack = currentQueue[next];
+    if (!nextTrack) return;
+    set({ currentTrack: nextTrack, queueIndex: next, isPlaying: true, position: 0, duration: nextTrack.duration || 0 });
+    await playAudio(currentQueue, next, (pos, dur) => get().updatePlaybackProgress(pos, dur), 0, get().settings.crossfadeSec);
   },
 
   skipToPrevious: async () => {
@@ -455,20 +496,79 @@ export const useMusicStore = create<MusicStore>((set, get) => ({
     if (!currentQueue.length) return;
     if (position > 3) { await seekAudio(0); set({ position: 0 }); return; }
     const prev = Math.max(0, queueIndex - 1);
-    await get().playTrack(currentQueue[prev], currentQueue);
+    const prevTrack = currentQueue[prev];
+    if (!prevTrack) return;
+    set({ currentTrack: prevTrack, queueIndex: prev, isPlaying: true, position: 0, duration: prevTrack.duration || 0 });
+    await playAudio(currentQueue, prev, (pos, dur) => get().updatePlaybackProgress(pos, dur), 0, get().settings.crossfadeSec);
   },
 
-   seekTo: async (sec) => {
-     const safeSec = Math.max(0, sec);
-     await seekAudio(safeSec);
-     set({ position: safeSec });
-     const track = get().currentTrack;
-     if (track && get().settings.autoResume) {
-       await persistPlayback(track.id, safeSec, true);
-     }
-   },
+  seekTo: async (sec) => {
+    const safeSec = Math.max(0, sec);
+    await seekAudio(safeSec);
+    set({ position: safeSec });
+    const track = get().currentTrack;
+    if (track && get().settings.autoResume) {
+      await persistPlayback(track.id, safeSec, true);
+    }
+  },
 
-  toggleShuffle: () => set(s => ({ shuffleMode: !s.shuffleMode })),
+  toggleShuffle: async () => {
+    const { shuffleMode, currentTrack, currentQueue, originalQueue } = get();
+    const willShuffle = !shuffleMode;
+    const base = originalQueue.length > 0 ? originalQueue : currentQueue;
+
+    if (willShuffle) {
+      const active = currentTrack || currentQueue[0];
+      if (!active) {
+        set({ shuffleMode: true });
+        return;
+      }
+      const others = base.filter(t => t.id !== active.id);
+      const shuffledOthers = shuffleArray(others);
+      const newQueue = [active, ...shuffledOthers];
+
+      set({
+        shuffleMode: true,
+        originalQueue: base,
+        currentQueue: newQueue,
+        queueIndex: 0,
+      });
+
+      await syncUpcomingTracks(shuffledOthers);
+
+      try {
+        const { ToastAndroid } = require('react-native');
+        if (Platform.OS === 'android') {
+          ToastAndroid.show('Shuffle: On (Random playback)', ToastAndroid.SHORT);
+        }
+      } catch {}
+    } else {
+      const active = currentTrack;
+      let newIdx = 0;
+      if (active) {
+        const found = base.findIndex(t => t.id === active.id);
+        if (found >= 0) newIdx = found;
+      }
+
+      set({
+        shuffleMode: false,
+        currentQueue: base,
+        queueIndex: newIdx,
+      });
+
+      if (active) {
+        const upcoming = base.slice(newIdx + 1);
+        await syncUpcomingTracks(upcoming);
+      }
+
+      try {
+        const { ToastAndroid } = require('react-native');
+        if (Platform.OS === 'android') {
+          ToastAndroid.show('Shuffle: Off (Sequential playback)', ToastAndroid.SHORT);
+        }
+      } catch {}
+    }
+  },
 
   cycleRepeat: async () => {
     const { repeatMode } = get();

@@ -67,16 +67,18 @@ export default function App() {
               const trackIndex = event?.index;
               const store = useMusicStore.getState();
 
-              if (typeof trackIndex === 'number') {
-                useMusicStore.setState({ queueIndex: trackIndex, position: 0, duration: 0 });
+              let match = trackObj?.id ? store.allTracks.find(t => String(t.id) === String(trackObj.id)) : undefined;
+              if (!match && typeof trackIndex === 'number' && store.currentQueue[trackIndex]) {
+                match = store.currentQueue[trackIndex];
               }
-              if (trackObj?.id) {
-                const match = store.allTracks.find(t => String(t.id) === String(trackObj.id));
-                if (match) {
-                  setCurrentTrack(match);
-                }
-              } else if (typeof trackIndex === 'number' && store.currentQueue[trackIndex]) {
-                setCurrentTrack(store.currentQueue[trackIndex]);
+
+              if (match) {
+                setCurrentTrack(match);
+                const qIdx = store.currentQueue.findIndex(t => String(t.id) === String(match!.id));
+                const newIdx = qIdx >= 0 ? qIdx : (typeof trackIndex === 'number' ? trackIndex : store.queueIndex);
+                useMusicStore.setState({ queueIndex: newIdx, position: 0, duration: 0 });
+              } else if (typeof trackIndex === 'number') {
+                useMusicStore.setState({ queueIndex: trackIndex, position: 0, duration: 0 });
               }
             }));
 
