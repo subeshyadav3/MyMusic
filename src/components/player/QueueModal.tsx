@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { View, Text, StyleSheet, Modal, TouchableOpacity, FlatList, Alert, Platform } from 'react-native';
-import { X, Play, Trash2, ListMusic } from 'lucide-react-native';
+import { X, Play, Trash2, ListMusic, Shuffle } from 'lucide-react-native';
 import type { ColorTheme } from '../../constants/colors';
 import { useThemeColors } from '../../constants/theme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -14,6 +14,7 @@ export const QueueModal: React.FC = () => {
   const {
     isQueueVisible, setQueueVisible, currentQueue, currentTrack, queueIndex,
     playTrack, removeFromQueue, clearQueue, createPlaylist,
+    shuffleMode, toggleShuffle,
   } = useMusicStore();
 
   const handleSaveAsPlaylist = async () => {
@@ -49,6 +50,21 @@ export const QueueModal: React.FC = () => {
           </View>
 
           <View style={styles.actions}>
+            <TouchableOpacity
+              style={[
+                styles.btn,
+                { borderColor: theme.border },
+                shuffleMode && { backgroundColor: theme.accentLight + '20', borderColor: theme.accentLight },
+              ]}
+              onPress={toggleShuffle}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Shuffle size={13} color={shuffleMode ? theme.accentLight : theme.textMuted} />
+                <Text style={[styles.btnTxt, { color: shuffleMode ? theme.accentLight : theme.textMuted }]}>
+                  {shuffleMode ? 'Shuffle ON' : 'Sequential'}
+                </Text>
+              </View>
+            </TouchableOpacity>
             <TouchableOpacity style={[styles.btn, { borderColor: theme.border }]} onPress={handleSaveAsPlaylist}>
               <Text style={[styles.btnTxt, { color: theme.accentLight }]}>Save as playlist</Text>
             </TouchableOpacity>
