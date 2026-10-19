@@ -3,7 +3,7 @@ import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Track, Album, Artist, Genre, Folder, Playlist, RepeatModeType } from '../types/music';
 import { DEMO_TRACKS } from '../constants/demoTracks';
-import { setupPlayer, playAudio, pauseAudio, resumeAudio, seekAudio, setRepeatMode, setPlaybackRate, nativeAppendTrack, nativeRemoveAt, nativePlayNext, syncUpcomingTracks } from '../services/PlaybackManager';
+import { setupPlayer, playAudio, pauseAudio, resumeAudio, seekAudio, setRepeatMode, setPlaybackRate, nativeAppendTrack, nativeRemoveAt, nativePlayNext, nativeMove, syncUpcomingTracks, isTrackLoaded } from '../services/PlaybackManager';
 import { scanDeviceAudioFiles } from '../services/MediaScanner';
 import { updateGlobalTheme } from '../constants/colors';
 
@@ -357,20 +357,29 @@ export const useMusicStore = create<MusicStore>((set, get) => ({
          pushEqToNative(parsed.eqGains, parsed.eqEnabled).catch(() => {});
        }
 
+       let pendingResume: SavedPlayback | null = null;
        if (savedPlayback) {
          try {
-           const parsed = JSON.parse(savedPlayback) as SavedPlayback;
-           const track = get().allTracks.find(t => t.id === parsed.trackId);
-           if (track && get().settings.autoResume) {
-             set({ currentTrack: track, position: Math.max(0, parsed.position || 0), duration: track.duration || 0 });
-           }
+           pendingResume = JSON.parse(savedPlayback) as SavedPlayback;
          } catch {
            await AsyncStorage.removeItem(STORAGE_KEYS.LAST_TRACK);
          }
        }
 
-      // Automatically scan device audio on startup
-      get().scanLocalTracks().catch(() => {});
+      // Automatically scan device audio on startup (await so a saved local
+      // track can be resolved after the library is populated).
+      await get().scanLocalTracks().catch(() => {});
+
+      if (pendingResume && get().settings.autoResume) {
+        const track = get().allTracks.find(t => t.id === pendingResume!.trackId);
+        if (track) {
+          set({
+            currentTrack: track,
+            position: Math.max(0, pendingResume.position || 0),
+            duration: track.duration || 0,
+          });
+        }
+      }
     } catch (e) {
       console.warn('initStore:', e);
     }
@@ -394,6 +403,9 @@ export const useMusicStore = create<MusicStore>((set, get) => ({
       const playlists = prev.playlists
         .map(p => ({ ...p, trackIds: p.trackIds.filter(id => validIds.has(id)) }))
         .filter(p => !p.id.startsWith('pl-default') || p.trackIds.length > 0);
+      // Keep the live queue only if its current track survived; otherwise use the
+      // freshly scanned library so shuffle doesn't rebuild from stale demo tracks.
+      const keepQueue = prev.currentQueue.length > 0 && !!prev.currentTrack && stillExists;
       set({
         allTracks: local,
         ...lib,
@@ -401,7 +413,8 @@ export const useMusicStore = create<MusicStore>((set, get) => ({
         favorites: prev.favorites.filter(id => validIds.has(id)),
         history: prev.history.filter(h => validIds.has(h.trackId)),
         currentTrack: stillExists ? prev.currentTrack : null,
-        currentQueue: prev.currentQueue.length > 0 && prev.currentTrack ? prev.currentQueue : local,
+        currentQueue: keepQueue ? prev.currentQueue : local,
+        originalQueue: keepQueue ? (prev.originalQueue.length > 0 ? prev.originalQueue : prev.currentQueue) : local,
         queueIndex: stillExists ? prev.queueIndex : 0,
       });
     } catch (e) {
@@ -461,7 +474,16 @@ export const useMusicStore = create<MusicStore>((set, get) => ({
       await pauseAudio(); set({ isPlaying: false });
       if (currentTrack && get().settings.autoResume) persistPlayback(currentTrack.id, position, true).catch(() => {});
     }
-    else { await resumeAudio(); set({ isPlaying: true }); }
+    else {
+      // Metadata restored from storage ("auto resume") but nothing is loaded in
+      // the audio engine yet — load the track before trying to resume.
+      if (currentTrack && !isTrackLoaded()) {
+        const queue = currentQueue.length > 0 ? currentQueue : [currentTrack];
+        await get().playTrack(currentTrack, queue);
+        return;
+      }
+      await resumeAudio(); set({ isPlaying: true });
+    }
   },
 
   skipToNext: async () => {
@@ -475,9 +497,20 @@ export const useMusicStore = create<MusicStore>((set, get) => ({
     if (next >= currentQueue.length) {
       if (repeatMode === 'queue') {
         if (shuffleMode && originalQueue.length > 1) {
+          // Reshuffle the base queue and restart from the top. Play directly to
+          // avoid playTrack re-shuffling what we just built.
           const reshuffled = shuffleArray(originalQueue);
-          set({ currentQueue: reshuffled, queueIndex: 0 });
-          await get().playTrack(reshuffled[0], originalQueue);
+          const first = reshuffled[0];
+          set({
+            currentTrack: first,
+            originalQueue,
+            currentQueue: reshuffled,
+            queueIndex: 0,
+            isPlaying: true,
+            position: 0,
+            duration: first.duration || 0,
+          });
+          await playAudio(reshuffled, 0, (pos, dur) => get().updatePlaybackProgress(pos, dur), 0, get().settings.crossfadeSec);
           return;
         }
         next = 0;
@@ -643,6 +676,7 @@ export const useMusicStore = create<MusicStore>((set, get) => ({
     const curId = get().currentTrack?.id;
     const newIdx = curId ? q.findIndex(t => t.id === curId) : get().queueIndex;
     set({ currentQueue: q, queueIndex: Math.max(0, newIdx) });
+    nativeMove(from, to).catch(() => {});
   },
 
   removeFromQueue: (index) => {

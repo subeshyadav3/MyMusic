@@ -1,4 +1,4 @@
-import React, {useState, useMemo} from 'react';
+import React, {useState, useMemo, useEffect} from 'react';
 import { View, Image, StyleSheet, StyleProp, ViewStyle, ImageStyle } from 'react-native';
 import { Music2 } from 'lucide-react-native';
 import type { ColorTheme } from '../../constants/colors';
@@ -24,6 +24,12 @@ export const TrackArtwork: React.FC<Props> = ({
   const __theme = useThemeColors();
   const styles = useMemo(() => makeStyles(__theme), [__theme]);
   const [loadError, setLoadError] = useState(false);
+
+  // Reuse of this component (e.g. full player) with a new uri must clear a
+  // previous failure, otherwise the placeholder sticks forever.
+  useEffect(() => {
+    setLoadError(false);
+  }, [uri]);
 
   const finalIconSize = iconSize || Math.max(16, Math.round(size * 0.42));
 

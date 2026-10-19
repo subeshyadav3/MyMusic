@@ -26,7 +26,17 @@ const { width: SW } = Dimensions.get('window');
 const TABS = ['Songs', 'Albums', 'Artists', 'Genres', 'Folders'] as const;
 type TabType = typeof TABS[number];
 
-type SortKey = 'title' | 'artist' | 'album' | 'duration';
+type SortKey = 'title' | 'artist' | 'album' | 'duration' | 'dateAdded';
+
+const SORT_OPTIONS: SortKey[] = ['title', 'artist', 'album', 'duration', 'dateAdded'];
+
+const SORT_LABELS: Record<SortKey, string> = {
+  title: 'Title',
+  artist: 'Artist',
+  album: 'Album',
+  duration: 'Duration',
+  dateAdded: 'Date Added',
+};
 
 export default function LibraryScreen() {
   const theme = useThemeColors();
@@ -56,8 +66,9 @@ export default function LibraryScreen() {
       t.artist.toLowerCase().includes(search.toLowerCase())
     );
     list.sort((a, b) => {
-      const aVal = (a[sortBy] ?? '') as string | number;
-      const bVal = (b[sortBy] ?? '') as string | number;
+      const numeric = sortBy === 'dateAdded' || sortBy === 'duration';
+      const aVal = (a[sortBy] ?? (numeric ? 0 : '')) as string | number;
+      const bVal = (b[sortBy] ?? (numeric ? 0 : '')) as string | number;
       const cmp = typeof aVal === 'number' && typeof bVal === 'number'
         ? aVal - bVal
         : String(aVal).localeCompare(String(bVal));
@@ -91,7 +102,7 @@ export default function LibraryScreen() {
             <View style={styles.headerActions}>
               {activeTab === 'Songs' && (
                 <TouchableOpacity style={styles.sortBtn} onPress={() => setShowSort(!showSort)}>
-                  <Text style={styles.sortTxt}>{sortBy}</Text>
+                  <Text style={styles.sortTxt}>{SORT_LABELS[sortBy]}</Text>
                   {sortAsc ? <ChevronUp size={14} color={theme.accentLight} /> : <ChevronDown size={14} color={theme.accentLight} />}
                 </TouchableOpacity>
               )}
@@ -132,7 +143,7 @@ export default function LibraryScreen() {
         {/* Sort Dropdown */}
         {showSort && !isSelecting && (
           <View style={styles.sortDropdown}>
-            {(['title', 'artist', 'album', 'duration'] as SortKey[]).map(k => (
+            {SORT_OPTIONS.map(k => (
               <TouchableOpacity
                 key={k}
                 style={[styles.sortOption, sortBy === k && styles.sortOptionActive]}
@@ -143,7 +154,7 @@ export default function LibraryScreen() {
                 }}
               >
                 <Text style={[styles.sortOptionTxt, sortBy === k && { color: theme.accentLight }]}>
-                  {k.charAt(0).toUpperCase() + k.slice(1)} {sortBy === k ? (sortAsc ? '↑' : '↓') : ''}
+                  {SORT_LABELS[k]} {sortBy === k ? (sortAsc ? '↑' : '↓') : ''}
                 </Text>
               </TouchableOpacity>
             ))}

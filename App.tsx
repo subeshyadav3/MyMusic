@@ -34,7 +34,12 @@ function ThemedRoot() {
 }
 
 export default function App() {
-  const { initStore, setIsPlaying, setCurrentTrack, updatePlaybackProgress } = useMusicStore();
+  // Subscribe to individual stable actions instead of the whole store.
+  // Using useMusicStore() here re-rendered the entire tree on every progress tick.
+  const initStore = useMusicStore(s => s.initStore);
+  const setIsPlaying = useMusicStore(s => s.setIsPlaying);
+  const setCurrentTrack = useMusicStore(s => s.setCurrentTrack);
+  const updatePlaybackProgress = useMusicStore(s => s.updatePlaybackProgress);
 
   useEffect(() => {
     // 1. Initialize store preferences & auto-scan local tracks

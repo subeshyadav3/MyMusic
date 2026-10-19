@@ -5,6 +5,14 @@ let isPlayerInitialized = false;
 let setupPromise: Promise<boolean> | null = null;
 let webAudio: any = null;
 let currentLoadedQueueHash: string = '';
+// Whether a track/queue has actually been handed to the audio engine in this
+// session. Used to distinguish "paused" from "restored metadata, nothing loaded".
+let hasActiveTrack = false;
+
+export const isTrackLoaded = (): boolean => {
+  if (Platform.OS === 'web') return !!webAudio;
+  return hasActiveTrack;
+};
 
 const queueHash = (tracks: Track[]): string => {
   if (tracks.length === 0) return 'empty';
@@ -47,9 +55,12 @@ export const setupPlayer = async (): Promise<boolean> => {
 
       await TrackPlayer.updateOptions({
         android: {
+          // Keep the foreground playback service alive when the user swipes the
+          // app out of the recents/task switcher — music keeps playing (and the
+          // notification stays) until the user explicitly pauses/stops it.
           appKilledPlaybackBehavior:
-            AppKilledPlaybackBehavior?.StopPlaybackAndRemoveNotification ||
-            'stop-playback-and-remove-notification',
+            AppKilledPlaybackBehavior?.ContinuePlayback ||
+            'continue-playback',
         },
         progressUpdateEventInterval: 1,
         capabilities: [
@@ -105,6 +116,7 @@ export const playAudio = async (
     }
     if (typeof window !== 'undefined') {
        webAudio = new window.Audio(track.url);
+       hasActiveTrack = true;
        if (initialPosition > 0) webAudio.currentTime = initialPosition;
       if (onProgress) {
         webAudio.ontimeupdate = () =>
@@ -138,6 +150,7 @@ export const playAudio = async (
           try { await TrackPlayer.seekTo(initialPosition); } catch {}
         }
         await TrackPlayer.play();
+        hasActiveTrack = true;
         if (fadeMs > 0) await rampVolume(0.2, 1, Math.min(fadeMs, 600)).catch(() => {});
         else await setVolumeNative(1).catch(() => {});
       } else {
@@ -168,6 +181,7 @@ export const playAudio = async (
         }
 
         await TrackPlayer.play();
+        hasActiveTrack = true;
         if (fadeMs > 0) await rampVolume(0.2, 1, Math.min(fadeMs, 800)).catch(() => {});
         else await setVolumeNative(1).catch(() => {});
       }
@@ -332,6 +346,18 @@ export const nativePlayNext = async (track: Track, afterIndex: number) => {
     }
   } catch (e) {
     console.warn('[PlaybackManager] nativePlayNext error:', e);
+  }
+};
+
+export const nativeMove = async (from: number, to: number) => {
+  if (Platform.OS === 'web') return;
+  const TrackPlayer = getTrackPlayer();
+  if (!TrackPlayer || typeof (TrackPlayer as any).move !== 'function') return;
+  try {
+    await (TrackPlayer as any).move(from, to);
+    currentLoadedQueueHash = '';
+  } catch (e) {
+    console.warn('[PlaybackManager] nativeMove error:', e);
   }
 };
 
